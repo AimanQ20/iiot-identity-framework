@@ -1,0 +1,2 @@
+"""Fog-node application package."""
+

@@ -1,0 +1,13 @@
+fastapi==0.115.12
+uvicorn[standard]==0.34.2
+cryptography==44.0.3
+PyJWT==2.10.1
+SQLAlchemy==2.0.41
+pydantic==2.11.5
+pytest==8.3.5
+httpx==0.28.1
+pandas==2.2.3
+matplotlib==3.10.3
+seaborn==0.13.2
+streamlit==1.45.1
+
