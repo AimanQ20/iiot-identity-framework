@@ -1,21 +1,26 @@
 from contextlib import asynccontextmanager
 
-from fastapi import FastAPI, HTTPException
+from fastapi import Depends, FastAPI, HTTPException
+from sqlalchemy.orm import Session
 
-from fog.access_service import process_permanent_access, process_temporary_access
-from fog.database import Base, engine
-from fog.merkle import build_merkle_root
-from fog.registration import authenticate_and_register_placeholder, create_device_leaf
-from fog.revocation import revoke_device_placeholder, revoke_token_placeholder
-from fog.schemas import (
-    AuthenticatedDevice,
-    PermanentAccessRequest,
-    RevokeRequest,
-    TemporaryAccessRequest,
-    TokenIssueRequest,
-    TokenResponse,
+from fog.database import Base, engine, get_db
+from fog.registration import (
+    begin_registration,
+    complete_registration,
+    finalize_epoch,
+    get_device_proof,
+    issue_authentication_challenge,
 )
-from fog.token_service import issue_temporary_token
+from fog.revocation import revoke_device
+from fog.schemas import (
+    AuthenticationChallengeRequest,
+    AuthenticationChallengeResponse,
+    BeginRegistrationRequest,
+    CompleteRegistrationRequest,
+    ProofOfPossessionChallengeResponse,
+    RegistrationResponse,
+    RevokeRequest,
+)
 
 
 @asynccontextmanager
@@ -26,62 +31,145 @@ async def lifespan(_: FastAPI):
 
 app = FastAPI(
     title="Single-Zone IIoT Identity Framework",
-    version="0.1.0",
+    version="0.2.0",
     lifespan=lifespan,
 )
 
 
 @app.get("/health")
 def health():
-    return {"status": "ok", "zone": "zone-1"}
+    return {
+        "status": "ok",
+        "zone": "zone-1",
+    }
 
 
-@app.post("/registration/mock")
-def mock_registration(device: AuthenticatedDevice):
-    """Temporary integration endpoint; Member 1 replaces it with real registration."""
+@app.post(
+    "/auth/challenge",
+    response_model=AuthenticationChallengeResponse,
+)
+def authentication_challenge(
+    request: AuthenticationChallengeRequest,
+):
     try:
-        accepted = authenticate_and_register_placeholder(device)
-        leaf = create_device_leaf(accepted.did, accepted.public_key)
-        return {"device": accepted, "leaf": leaf.hex(), "status": "PENDING"}
+        nonce, expires_in = issue_authentication_challenge(
+            request.device_id
+        )
+
+        return AuthenticationChallengeResponse(
+            device_id=request.device_id,
+            nonce=nonce,
+            expires_in=expires_in,
+        )
+
     except ValueError as exc:
-        raise HTTPException(status_code=401, detail=str(exc)) from exc
+        raise HTTPException(
+            status_code=404,
+            detail=str(exc),
+        ) from exc
 
 
-@app.post("/batch/demo-root")
-def demo_root(hex_leaves: list[str]):
-    """Small working endpoint proving the shared Merkle helper runs."""
+@app.post(
+    "/registration/begin",
+    response_model=ProofOfPossessionChallengeResponse,
+)
+def registration_begin(
+    request: BeginRegistrationRequest,
+    db: Session = Depends(get_db),
+):
     try:
-        root = build_merkle_root([bytes.fromhex(item) for item in hex_leaves])
-        return {"root": root.hex(), "leaf_count": len(hex_leaves)}
+        registration_id, challenge, expires_in = begin_registration(
+            request,
+            db,
+        )
+
+        return ProofOfPossessionChallengeResponse(
+            registration_id=registration_id,
+            challenge=challenge,
+            expires_in=expires_in,
+        )
+
+    except PermissionError as exc:
+        raise HTTPException(
+            status_code=401,
+            detail=str(exc),
+        ) from exc
+
     except ValueError as exc:
-        raise HTTPException(status_code=400, detail=str(exc)) from exc
+        raise HTTPException(
+            status_code=400,
+            detail=str(exc),
+        ) from exc
 
 
-@app.post("/token/issue", response_model=TokenResponse)
-def issue_token(request: TokenIssueRequest):
+@app.post(
+    "/registration/complete",
+    response_model=RegistrationResponse,
+)
+def registration_complete(
+    request: CompleteRegistrationRequest,
+    db: Session = Depends(get_db),
+):
+    result = complete_registration(request, db)
+
+    if not result.success:
+        raise HTTPException(
+            status_code=401,
+            detail=result.model_dump(),
+        )
+
+    return result
+
+
+@app.post("/batch/finalize")
+def batch_finalize(
+    db: Session = Depends(get_db),
+):
     try:
-        token, ttl = issue_temporary_token(request.device)
-        return TokenResponse(access_token=token, expires_in=ttl)
+        return finalize_epoch(db)
+
     except ValueError as exc:
-        raise HTTPException(status_code=401, detail=str(exc)) from exc
+        raise HTTPException(
+            status_code=400,
+            detail=str(exc),
+        ) from exc
 
 
-@app.post("/access/temporary")
-def temporary_access(request: TemporaryAccessRequest):
-    return process_temporary_access(request)
+@app.get("/epochs/{epoch_id}/devices/{did}/proof")
+def retrieve_proof(
+    epoch_id: int,
+    did: str,
+    db: Session = Depends(get_db),
+):
+    try:
+        return get_device_proof(
+            did,
+            epoch_id,
+            db,
+        )
 
-
-@app.post("/access/permanent")
-def permanent_access(request: PermanentAccessRequest):
-    return process_permanent_access(request)
+    except ValueError as exc:
+        raise HTTPException(
+            status_code=404,
+            detail=str(exc),
+        ) from exc
 
 
 @app.post("/devices/{did}/revoke")
-def revoke_device(did: str, request: RevokeRequest):
-    return revoke_device_placeholder(did, request.reason)
+def revoke_registered_device(
+    did: str,
+    request: RevokeRequest,
+    db: Session = Depends(get_db),
+):
+    try:
+        return revoke_device(
+            did,
+            request.reason,
+            db,
+        )
 
-
-@app.post("/tokens/{jti}/revoke")
-def revoke_token(jti: str, request: RevokeRequest):
-    return revoke_token_placeholder(jti, request.reason)
-
+    except ValueError as exc:
+        raise HTTPException(
+            status_code=404,
+            detail=str(exc),
+        ) from exc

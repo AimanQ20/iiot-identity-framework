@@ -34,6 +34,56 @@ class AuthenticatedDevice(BaseModel):
     status: DeviceStatus = DeviceStatus.PENDING
 
 
+# -------------------------------------------------------------------
+# Phase 1: Authentication and registration
+# -------------------------------------------------------------------
+
+
+class AuthenticationChallengeRequest(BaseModel):
+    device_id: str
+
+
+class AuthenticationChallengeResponse(BaseModel):
+    device_id: str
+    nonce: str
+    expires_in: int
+
+
+class BeginRegistrationRequest(BaseModel):
+    device_id: str
+    auth_nonce: str
+    auth_hmac: str
+    did: str
+    public_key: str
+    device_type: DeviceType
+    role: str
+    zone: str = "zone-1"
+
+
+class ProofOfPossessionChallengeResponse(BaseModel):
+    registration_id: str
+    challenge: str
+    expires_in: int
+
+
+class CompleteRegistrationRequest(BaseModel):
+    registration_id: str
+    signature: str
+
+
+class RegistrationResponse(BaseModel):
+    success: bool
+    code: str
+    message: str
+    device: AuthenticatedDevice | None = None
+    leaf: str | None = None
+
+
+# -------------------------------------------------------------------
+# Phase 2: Temporary tokens
+# -------------------------------------------------------------------
+
+
 class TokenIssueRequest(BaseModel):
     device: AuthenticatedDevice
 
@@ -42,6 +92,11 @@ class TokenResponse(BaseModel):
     access_token: str
     token_type: str = "bearer"
     expires_in: int
+
+
+# -------------------------------------------------------------------
+# Phase 3: Merkle proof and access requests
+# -------------------------------------------------------------------
 
 
 class MerkleSibling(BaseModel):
@@ -87,6 +142,10 @@ class DecisionResponse(BaseModel):
     details: dict[str, Any] = Field(default_factory=dict)
 
 
+# -------------------------------------------------------------------
+# Revocation
+# -------------------------------------------------------------------
+
+
 class RevokeRequest(BaseModel):
     reason: str = "Administrative revocation"
-
