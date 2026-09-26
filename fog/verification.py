@@ -1,7 +1,7 @@
 """Permanent epoch-bound identity verification.
 
-MEMBER 1 owns cryptographic identity verification.
-Member 2 performs authorization after successful verification.
+Member 1 verifies cryptographic identity and Merkle membership.
+Member 2 applies resource authorization after successful verification.
 """
 
 from sqlalchemy.orm import Session
@@ -19,11 +19,14 @@ def verify_permanent_identity(
     proof: InclusionProof,
     db: Session,
 ) -> DecisionResponse:
-    """Verify a device against the trusted epoch root."""
+    """Verify a device against its trusted epoch root."""
 
-    epoch = db.query(Epoch).filter(
-        Epoch.epoch_id == epoch_id
-    ).first()
+    # Obtain the trusted root for the requested epoch.
+    epoch = (
+        db.query(Epoch)
+        .filter(Epoch.epoch_id == epoch_id)
+        .first()
+    )
 
     if epoch is None:
         return DecisionResponse(
@@ -33,9 +36,12 @@ def verify_permanent_identity(
             decision="DENY",
         )
 
-    device = db.query(Device).filter(
-        Device.did == did
-    ).first()
+    # Find the currently registered device.
+    device = (
+        db.query(Device)
+        .filter(Device.did == did)
+        .first()
+    )
 
     if device is None:
         return DecisionResponse(
@@ -45,6 +51,7 @@ def verify_permanent_identity(
             decision="DENY",
         )
 
+    # Prevent substitution of another public key.
     if device.public_key != public_key:
         return DecisionResponse(
             success=False,
@@ -56,6 +63,7 @@ def verify_permanent_identity(
             decision="DENY",
         )
 
+    # Recompute Ld = H(DID || public key).
     expected_leaf = create_device_leaf(
         did,
         public_key,
@@ -65,7 +73,10 @@ def verify_permanent_identity(
         return DecisionResponse(
             success=False,
             code="LEAF_MISMATCH",
-            message="Submitted leaf does not match DID and public key",
+            message=(
+                "Submitted leaf does not match "
+                "the DID and public key"
+            ),
             decision="DENY",
         )
 
@@ -77,10 +88,13 @@ def verify_permanent_identity(
         for sibling in proof.siblings
     ]
 
+    # Reconstruct the root and compare it with the trusted root.
     proof_valid = verify_inclusion_proof(
-        expected_leaf,
-        raw_proof,
-        bytes.fromhex(epoch.merkle_root),
+        leaf=expected_leaf,
+        proof=raw_proof,
+        trusted_root=bytes.fromhex(
+            epoch.merkle_root
+        ),
     )
 
     if not proof_valid:
@@ -94,22 +108,30 @@ def verify_permanent_identity(
             decision="DENY",
         )
 
-    revoked = db.query(RevokedDevice).filter(
-        RevokedDevice.did == did
-    ).first()
+    # A historical proof may be valid even after revocation.
+    revocation = (
+        db.query(RevokedDevice)
+        .filter(RevokedDevice.did == did)
+        .first()
+    )
 
-    if revoked is not None or device.status == "REVOKED":
+    if (
+        revocation is not None
+        or device.status == "REVOKED"
+    ):
         return DecisionResponse(
             success=False,
             code="DEVICE_REVOKED",
             message=(
-                "Historical proof is valid, but the device "
-                "is currently revoked"
+                "Historical inclusion proof is valid, "
+                "but the device is currently revoked"
             ),
             decision="DENY",
             details={
                 "historical_proof_valid": True,
                 "current_authorization": False,
+                "did": did,
+                "epoch_id": epoch_id,
             },
         )
 

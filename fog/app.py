@@ -21,7 +21,9 @@ from fog.schemas import (
     RegistrationResponse,
     RevokeRequest,
 )
-
+from fog.models import Device, Epoch
+from fog.schemas import VerifyIdentityRequest
+from fog.verification import verify_permanent_identity
 
 @asynccontextmanager
 async def lifespan(_: FastAPI):
@@ -173,3 +175,71 @@ def revoke_registered_device(
             status_code=404,
             detail=str(exc),
         ) from exc
+
+@app.post("/identity/verify")
+def verify_identity(
+    request: VerifyIdentityRequest,
+    db: Session = Depends(get_db),
+):
+    """Verify an epoch-bound Merkle membership proof."""
+
+    return verify_permanent_identity(
+        did=request.did,
+        public_key=request.public_key,
+        epoch_id=request.epoch_id,
+        proof=request.proof,
+        db=db,
+    )
+
+
+@app.get("/devices")
+def list_devices(
+    db: Session = Depends(get_db),
+):
+    """List registered devices for the demo interface."""
+
+    devices = (
+        db.query(Device)
+        .order_by(Device.registered_at.asc())
+        .all()
+    )
+
+    return [
+        {
+            "device_id": device.device_id,
+            "did": device.did,
+            "device_type": device.device_type,
+            "role": device.role,
+            "zone": device.zone,
+            "status": device.status,
+            "authentication_complete": (
+                device.authentication_complete
+            ),
+            "pop_verified": device.pop_verified,
+            "public_key": device.public_key,
+        }
+        for device in devices
+    ]
+
+
+@app.get("/epochs")
+def list_epochs(
+    db: Session = Depends(get_db),
+):
+    """List trusted roots stored by the fog."""
+
+    epochs = (
+        db.query(Epoch)
+        .order_by(Epoch.epoch_id.desc())
+        .all()
+    )
+
+    return [
+        {
+            "epoch_id": epoch.epoch_id,
+            "merkle_root": epoch.merkle_root,
+            "device_count": epoch.device_count,
+            "created_at": epoch.created_at,
+        }
+        for epoch in epochs
+    ]

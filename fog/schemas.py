@@ -109,7 +109,12 @@ class InclusionProof(BaseModel):
     leaf: str
     siblings: list[MerkleSibling]
 
-
+class VerifyIdentityRequest(BaseModel):
+    did: str
+    public_key: str
+    epoch_id: int
+    proof: InclusionProof
+    
 class TemporaryAccessRequest(BaseModel):
     token: str
     did: str
