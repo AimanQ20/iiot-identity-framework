@@ -1,0 +1,16 @@
+{
+  "provisional": {
+    "temperature_sensor": {"temperature_readings": ["WRITE"]},
+    "pressure_sensor": {"pressure_readings": ["WRITE"]},
+    "smart_meter": {"energy_readings": ["WRITE"]}
+  },
+  "permanent": {
+    "temperature_sensor": {"temperature_readings": ["WRITE", "READ"]},
+    "pressure_sensor": {"pressure_readings": ["WRITE", "READ"]},
+    "smart_meter": {"energy_readings": ["WRITE", "READ"]},
+    "camera": {"video_stream": ["WRITE", "READ"]},
+    "valve_controller": {"valve": ["OPEN", "CLOSE"]},
+    "motor_controller": {"motor": ["START", "STOP"]}
+  }
+}
+
