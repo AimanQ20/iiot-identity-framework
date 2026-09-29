@@ -21,7 +21,7 @@ class SimulatedDevice:
         self,
         device_id: str,
         device_type: str,
-        psk: str,
+        psk: str = "test-device-psk",
         role: str = "sensor",
         zone: str = "zone-1",
     ):

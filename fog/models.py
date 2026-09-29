@@ -69,7 +69,23 @@ class RevokedToken(Base):
     __tablename__ = "revoked_tokens"
 
     jti: Mapped[str] = mapped_column(String(100), primary_key=True)
-    did: Mapped[str] = mapped_column(String(200), index=True)
+    did: Mapped[str] = mapped_column(String(200), index=True, default="unknown")
     reason: Mapped[str] = mapped_column(String(500))
     revoked_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now)
 
+
+class BatchQueue(Base):
+    """MEMBER 2 (Phase 2): devices waiting for the next/finalized registration batch.
+
+    Member 1's batch-finalization step (Phase 1) should mark rows `included=True`
+    once a device's leaf is folded into a finalized epoch tree.
+    """
+
+    __tablename__ = "batch_queue"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    did: Mapped[str] = mapped_column(String(200), index=True)
+    device_type: Mapped[str] = mapped_column(String(50))
+    role: Mapped[str] = mapped_column(String(50))
+    queued_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now)
+    included: Mapped[bool] = mapped_column(Boolean, default=False)

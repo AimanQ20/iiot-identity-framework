@@ -1,8 +1,4 @@
-"""Device and token revocation.
-
-Member 1 owns device revocation.
-Member 2 owns token revocation.
-"""
+"""Device and temporary-token revocation services."""
 
 from sqlalchemy.orm import Session
 
@@ -14,40 +10,51 @@ def revoke_device(
     reason: str,
     db: Session,
 ) -> dict:
-    """Immediately revoke a registered device."""
+    """Immediately and persistently revoke a registered device.
 
-    device = db.query(Device).filter(
-        Device.did == did
-    ).first()
+    Historical proofs and epoch roots are preserved, but all current
+    temporary and permanent resource requests are denied.
+    """
+
+    device = (
+        db.query(Device)
+        .filter(Device.did == did)
+        .first()
+    )
 
     if device is None:
         raise ValueError("Device does not exist")
 
-    existing_revocation = db.query(RevokedDevice).filter(
-        RevokedDevice.did == did
-    ).first()
+    existing_revocation = db.get(
+        RevokedDevice,
+        did,
+    )
 
     if existing_revocation is not None:
         return {
             "success": True,
             "code": "DEVICE_ALREADY_REVOKED",
+            "status": "ALREADY_REVOKED",
             "did": did,
             "reason": existing_revocation.reason,
+            "message": "Device was already revoked",
         }
 
     device.status = "REVOKED"
 
-    revocation = RevokedDevice(
-        did=did,
-        reason=reason,
+    db.add(
+        RevokedDevice(
+            did=did,
+            reason=reason,
+        )
     )
 
-    db.add(revocation)
     db.commit()
 
     return {
         "success": True,
         "code": "DEVICE_REVOKED",
+        "status": "REVOKED",
         "did": did,
         "reason": reason,
         "message": (
@@ -61,33 +68,35 @@ def is_device_revoked(
     did: str,
     db: Session,
 ) -> bool:
-    """Check current device-revocation status."""
+    """Return True when the DID is in the device revocation registry."""
 
     return (
-        db.query(RevokedDevice)
-        .filter(RevokedDevice.did == did)
-        .first()
+        db.get(RevokedDevice, did)
         is not None
     )
 
 
 def revoke_token(
     jti: str,
-    did: str,
     reason: str,
     db: Session,
+    did: str = "unknown",
 ) -> dict:
-    """MEMBER 2: immediately revoke a temporary token."""
+    """Immediately and persistently revoke a temporary token."""
 
-    existing = db.query(RevokedToken).filter(
-        RevokedToken.jti == jti
-    ).first()
+    existing_revocation = db.get(
+        RevokedToken,
+        jti,
+    )
 
-    if existing is not None:
+    if existing_revocation is not None:
         return {
             "success": True,
             "code": "TOKEN_ALREADY_REVOKED",
+            "status": "ALREADY_REVOKED",
             "jti": jti,
+            "did": existing_revocation.did,
+            "reason": existing_revocation.reason,
         }
 
     db.add(
@@ -103,6 +112,9 @@ def revoke_token(
     return {
         "success": True,
         "code": "TOKEN_REVOKED",
+        "status": "REVOKED",
         "jti": jti,
         "did": did,
+        "reason": reason,
+        "message": "Temporary token revoked immediately",
     }
