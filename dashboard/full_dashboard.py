@@ -10,10 +10,14 @@ Run this dashboard in a second terminal:
 from __future__ import annotations
 
 import copy
+import hashlib
+import secrets
 import time
+from pathlib import Path
 from typing import Any
 
 import httpx
+import jwt
 import pandas as pd
 import streamlit as st
 
@@ -63,6 +67,7 @@ STATE_DEFAULTS = {
     "latest_token": None,
     "latest_jti": None,
     "latest_token_did": None,
+    "latest_token_device_id": None,
 }
 for state_key, default in STATE_DEFAULTS.items():
     if state_key not in st.session_state:
@@ -109,6 +114,43 @@ def get_epochs() -> list[dict]:
 
 def label(device: dict) -> str:
     return f"{device.get('device_id', 'unknown')} — {device.get('status', 'unknown')}"
+
+
+DEFAULT_ACCESS = {
+    "temperature_sensor": ("temperature_readings", "WRITE"),
+    "pressure_sensor": ("pressure_readings", "WRITE"),
+    "smart_meter": ("energy_readings", "WRITE"),
+    "camera": ("video_stream", "READ"),
+    "valve_controller": ("valve", "OPEN"),
+    "motor_controller": ("motor", "START"),
+}
+
+
+def local_device(device_record: dict) -> SimulatedDevice | None:
+    """Return the simulator that owns this device's private key."""
+    return st.session_state.simulated_devices.get(device_record.get("device_id"))
+
+
+def token_jti(token: str) -> str:
+    """Read the JTI for request binding; the API still verifies the JWT."""
+    return str(jwt.decode(token, options={"verify_signature": False})["jti"])
+
+
+def signed_access_fields(
+    simulator: SimulatedDevice,
+    resource: str,
+    operation: str,
+    jti: str = "",
+) -> dict:
+    """Build a fresh resource request signed by the device's P-256 key."""
+    return simulator.build_signed_request(
+        resource=resource,
+        operation=operation,
+        body_hash=hashlib.sha256(b"").hexdigest(),
+        nonce=secrets.token_urlsafe(18),
+        timestamp=int(time.time()),
+        token_jti=jti,
+    )
 
 
 def register_device(profile: dict) -> bool:
@@ -159,11 +201,14 @@ def load_proof(device: dict, epoch_id: int) -> Any | None:
     return None
 
 
-def permanent_payload(device: dict, proof: dict, resource: str, action: str) -> dict:
+def permanent_payload(device: dict, proof: dict, resource: str, operation: str) -> dict | None:
+    simulator = local_device(device)
+    if simulator is None:
+        return None
     return {
         "did": device["did"], "public_key": device["public_key"],
         "epoch_id": proof["epoch_id"], "proof": proof,
-        "resource": resource, "action": action,
+        **signed_access_fields(simulator, resource, operation),
     }
 
 
@@ -196,7 +241,7 @@ for column, title, value in zip(st.columns(5),
 tabs = st.tabs([
     "1 · Registration", "2 · Batch & Merkle", "3 · Temporary Access",
     "4 · Permanent Access", "5 · Revocation", "6 · Security Attacks",
-    "Registry", "Audit Log",
+    "Registry", "Benchmarks", "Audit Log",
 ])
 
 with tabs[0]:
@@ -241,33 +286,48 @@ with tabs[1]:
 with tabs[2]:
     st.header("Phase 2 — Temporary JWT access")
     st.write("Issue a short-lived signed token after onboarding, then use it for resource access.")
-    active_devices = [d for d in get_devices() if d.get("status") == "ACTIVE"]
+    active_devices = [d for d in get_devices() if d.get("status") in {"PENDING", "ACTIVE"}]
     if not active_devices:
-        st.info("Finalize a batch so at least one device becomes ACTIVE.")
+        st.info("Register a non-revoked device first.")
     else:
         mapping = {label(d): d for d in active_devices}
         selected = mapping[st.selectbox("Active device", list(mapping), key="temporary_device")]
+        default_resource, default_operation = DEFAULT_ACCESS.get(
+            selected["device_type"], ("temperature_readings", "WRITE")
+        )
         col1, col2 = st.columns(2)
-        resource = col1.text_input("Resource", "telemetry", key="temp_resource")
-        action = col2.selectbox("Action", ["read", "write", "execute"], key="temp_action")
+        resource = col1.text_input("Resource", default_resource, key="temp_resource")
+        operation = col2.text_input("Operation", default_operation, key="temp_operation").upper()
+        simulator = local_device(selected)
+        if simulator is None:
+            st.warning("Private key unavailable in this dashboard session. Reset the demo database and register this device through the dashboard.")
         if st.button("Issue temporary token", type="primary", use_container_width=True):
-            result = api_request("POST", "/token/issue", json={
-                "did": selected["did"],
-                "authentication_complete": selected.get("authentication_complete", True),
-                "pop_verified": selected.get("pop_verified", True),
-            })
+            result = api_request("POST", "/token/issue", json={"device": {
+                "device_id": selected["device_id"], "did": selected["did"],
+                "public_key": selected["public_key"],
+                "public_key_thumbprint": hashlib.sha256(selected["public_key"].encode()).hexdigest(),
+                "device_type": selected["device_type"], "role": selected["role"],
+                "zone": selected["zone"],
+                "authentication_complete": selected["authentication_complete"],
+                "proof_of_possession_verified": selected["pop_verified"],
+                "status": selected["status"],
+            }})
             if successful(result):
-                st.session_state.latest_token = result.get("token") or result.get("access_token")
-                st.session_state.latest_jti = result.get("jti")
+                st.session_state.latest_token = result["access_token"]
+                st.session_state.latest_jti = token_jti(result["access_token"])
                 st.session_state.latest_token_did = selected["did"]
+                st.session_state.latest_token_device_id = selected["device_id"]
                 add_log(f"Issued temporary JWT for {selected['device_id']}", "PASS")
                 st.success("Temporary token issued.")
                 st.json(result)
         if st.session_state.latest_token:
             st.code(st.session_state.latest_token, language=None)
-            if st.button("Request temporary access", use_container_width=True):
+            if st.button("Request temporary access", disabled=simulator is None, use_container_width=True):
                 result = api_request("POST", "/access/temporary", json={
-                    "token": st.session_state.latest_token, "resource": resource, "action": action,
+                    "token": st.session_state.latest_token,
+                    **signed_access_fields(
+                        simulator, resource, operation, token_jti(st.session_state.latest_token)
+                    ),
                 })
                 if successful(result):
                     allowed = result.get("success", result.get("allowed", True))
@@ -286,9 +346,14 @@ with tabs[3]:
         mapping = {label(d): d for d in proof_devices}
         selected = mapping[st.selectbox("Device", list(mapping), key="permanent_device")]
         epoch_id = st.selectbox("Trusted epoch", [e["epoch_id"] for e in current_epochs], key="permanent_epoch")
+        default_resource, default_operation = DEFAULT_ACCESS.get(
+            selected["device_type"], ("temperature_readings", "READ")
+        )
+        if selected["device_type"] in {"temperature_sensor", "pressure_sensor", "smart_meter"}:
+            default_operation = "READ"
         c1, c2 = st.columns(2)
-        resource = c1.text_input("Resource", "telemetry", key="permanent_resource")
-        action = c2.selectbox("Action", ["read", "write", "execute"], key="permanent_action")
+        resource = c1.text_input("Resource", default_resource, key="permanent_resource")
+        operation = c2.text_input("Operation", default_operation, key="permanent_operation").upper()
         if st.button("Load inclusion proof", use_container_width=True):
             load_proof(selected, epoch_id)
         proof = st.session_state.latest_proof
@@ -305,8 +370,12 @@ with tabs[3]:
                     st.json(result)
                     add_log("Permanent identity proof verification executed", "PASS" if result.get("success") else "DENY")
             if st.button("Request permanent access", type="primary", use_container_width=True):
-                result = api_request("POST", "/access/permanent",
-                                     json=permanent_payload(proof_device, proof, resource, action))
+                payload = permanent_payload(proof_device, proof, resource, operation)
+                if payload is None:
+                    st.error("Private key unavailable. Reset the database and register the device through this dashboard.")
+                    result = None
+                else:
+                    result = api_request("POST", "/access/permanent", json=payload)
                 if successful(result):
                     allowed = result.get("success", result.get("allowed", True))
                     (st.success if allowed else st.error)("PERMANENT ACCESS ALLOWED" if allowed else "ACCESS DENIED")
@@ -353,8 +422,12 @@ with tabs[5]:
         if st.button("Run tampered-token attack", disabled=not bool(st.session_state.latest_token), use_container_width=True):
             token = st.session_state.latest_token
             tampered = token[:-1] + ("A" if token[-1] != "A" else "B")
+            simulator = st.session_state.simulated_devices.get(st.session_state.latest_token_device_id)
+            signed = signed_access_fields(
+                simulator, "temperature_readings", "WRITE", token_jti(token)
+            ) if simulator else {}
             result = api_request("POST", "/access/temporary", quiet=True,
-                                 json={"token": tampered, "resource": "telemetry", "action": "read"})
+                                 json={"token": tampered, **signed})
             denied = not successful(result) or not result.get("success", result.get("allowed", False))
             (st.success if denied else st.error)("PASS — tampered JWT denied" if denied else "FAIL — attack was accepted")
             add_log("Tampered-JWT attack denied" if denied else "Tampered-JWT attack accepted", "PASS" if denied else "FAIL")
@@ -363,8 +436,12 @@ with tabs[5]:
         st.subheader("Attack 2: Revoked-token replay")
         st.write("Reuses the latest token after its JTI has been placed in the revocation registry.")
         if st.button("Run revoked-token replay", disabled=not bool(st.session_state.latest_token), use_container_width=True):
+            simulator = st.session_state.simulated_devices.get(st.session_state.latest_token_device_id)
+            signed = signed_access_fields(
+                simulator, "temperature_readings", "WRITE", token_jti(st.session_state.latest_token)
+            ) if simulator else {}
             result = api_request("POST", "/access/temporary", quiet=True,
-                                 json={"token": st.session_state.latest_token, "resource": "telemetry", "action": "read"})
+                                 json={"token": st.session_state.latest_token, **signed})
             denied = not successful(result) or not result.get("success", result.get("allowed", False))
             (st.success if denied else st.warning)("PASS — replay denied" if denied else "Token is not revoked yet; revoke it first.")
             add_log("Revoked-token replay demonstration executed", "PASS" if denied else "INFO")
@@ -395,8 +472,9 @@ with tabs[5]:
             proof = copy.deepcopy(st.session_state.latest_proof)
             device = st.session_state.latest_proof_device
             claimed_epoch = int(proof["epoch_id"]) + 999
+            payload = permanent_payload(device, proof, "temperature_readings", "READ")
             result = api_request("POST", "/access/permanent", quiet=True, json={
-                **permanent_payload(device, proof, "telemetry", "read"), "epoch_id": claimed_epoch,
+                **(payload or {}), "epoch_id": claimed_epoch,
             })
             denied = not successful(result) or not result.get("success", result.get("allowed", False))
             (st.success if denied else st.error)("PASS — epoch mismatch denied" if denied else "FAIL — mismatch accepted")
@@ -419,6 +497,23 @@ with tabs[6]:
         st.info("No finalized epochs.")
 
 with tabs[7]:
+    st.header("Performance evaluation")
+    results_dir = Path("performance/results")
+    summary_path = results_dir / "full_system_summary.csv"
+    if summary_path.exists():
+        st.dataframe(pd.read_csv(summary_path), use_container_width=True, hide_index=True)
+        chart_files = [
+            "registration_latency.png", "merkle_batch_time.png",
+            "verification_latency.png", "verification_throughput.png",
+        ]
+        for left, right in zip(chart_files[::2], chart_files[1::2]):
+            c1, c2 = st.columns(2)
+            c1.image(str(results_dir / left), use_container_width=True)
+            c2.image(str(results_dir / right), use_container_width=True)
+    else:
+        st.info("Run `python -m performance.benchmark_full_system` to generate results.")
+
+with tabs[8]:
     st.header("Dashboard audit log")
     if st.button("Clear audit log"):
         st.session_state.logs = []
@@ -427,4 +522,3 @@ with tabs[7]:
         st.dataframe(pd.DataFrame(reversed(st.session_state.logs)), use_container_width=True, hide_index=True)
     else:
         st.info("No dashboard events recorded in this session.")
-

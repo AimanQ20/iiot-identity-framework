@@ -50,6 +50,20 @@ def issue_temporary_token(device: AuthenticatedDevice, db: Session) -> tuple[str
     if not device.authentication_complete or not device.proof_of_possession_verified:
         raise ValueError("Unauthenticated devices cannot receive tokens")
 
+    registered = db.query(Device).filter_by(did=device.did).one_or_none()
+    if registered is None:
+        raise ValueError("Device must complete Phase 1 registration before token issuance")
+
+    if not registered.authentication_complete or not registered.pop_verified:
+        raise ValueError("Registered device has not completed authentication and proof-of-possession")
+
+    if (
+        registered.device_id != device.device_id
+        or registered.public_key_thumbprint != device.public_key_thumbprint
+        or registered.public_key != device.public_key
+    ):
+        raise ValueError("Submitted device identity does not match the registered Phase 1 record")
+
     if db.get(RevokedDevice, device.did) is not None:
         raise ValueError("Device is revoked and cannot receive a temporary token")
 
@@ -67,7 +81,6 @@ def issue_temporary_token(device: AuthenticatedDevice, db: Session) -> tuple[str
     }
     token = jwt.encode(payload, settings.jwt_secret, algorithm=settings.jwt_algorithm)
 
-    _upsert_device_record(db, device)
     _queue_for_batch(db, device)
 
     return token, settings.token_ttl_seconds

@@ -3,7 +3,8 @@ import time
 from fastapi.testclient import TestClient
 
 from fog.app import app
-from fog.database import Base, engine
+from fog.database import Base, SessionLocal, engine
+from fog.models import Device
 from fog.registration import public_key_thumbprint
 from devices.device import SimulatedDevice
 
@@ -38,6 +39,19 @@ def _register_and_finalize(devices_with_types):
             "proof_of_possession_verified": True,
             "status": "PENDING",
         }
+        db = SessionLocal()
+        try:
+            db.add(Device(
+                device_id=payload["device_id"], did=payload["did"],
+                public_key=payload["public_key"],
+                public_key_thumbprint=payload["public_key_thumbprint"],
+                device_type=payload["device_type"], role=payload["role"],
+                zone=payload["zone"], status="PENDING",
+                authentication_complete=True, pop_verified=True,
+            ))
+            db.commit()
+        finally:
+            db.close()
         resp = client.post("/token/issue", json={"device": payload})
         assert resp.status_code == 200, resp.text
         sims.append(sim)

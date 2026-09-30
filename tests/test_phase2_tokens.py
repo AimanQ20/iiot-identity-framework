@@ -7,6 +7,7 @@ from fastapi.testclient import TestClient
 
 from fog.app import app
 from fog.database import Base, SessionLocal, engine
+from fog.models import Device
 from fog.registration import public_key_thumbprint
 from fog.settings import settings
 from devices.device import SimulatedDevice
@@ -37,7 +38,22 @@ def _authenticated_device_payload(sim: SimulatedDevice, device_type="temperature
 
 
 def _issue_token(sim: SimulatedDevice, **kwargs):
-    resp = client.post("/token/issue", json={"device": _authenticated_device_payload(sim, **kwargs)})
+    payload = _authenticated_device_payload(sim, **kwargs)
+    db = SessionLocal()
+    try:
+        if db.query(Device).filter_by(did=sim.did).one_or_none() is None:
+            db.add(Device(
+                device_id=payload["device_id"], did=payload["did"],
+                public_key=payload["public_key"],
+                public_key_thumbprint=payload["public_key_thumbprint"],
+                device_type=payload["device_type"], role=payload["role"],
+                zone=payload["zone"], status="PENDING",
+                authentication_complete=True, pop_verified=True,
+            ))
+            db.commit()
+    finally:
+        db.close()
+    resp = client.post("/token/issue", json={"device": payload})
     assert resp.status_code == 200, resp.text
     return resp.json()["access_token"]
 
@@ -66,6 +82,12 @@ def test_token_issuance_requires_completed_authentication():
     payload = _authenticated_device_payload(sim)
     payload["proof_of_possession_verified"] = False
     resp = client.post("/token/issue", json={"device": payload})
+    assert resp.status_code == 401
+
+
+def test_token_issuance_rejects_fabricated_unregistered_device():
+    sim = SimulatedDevice("unregistered", "temperature_sensor")
+    resp = client.post("/token/issue", json={"device": _authenticated_device_payload(sim)})
     assert resp.status_code == 401
 
 

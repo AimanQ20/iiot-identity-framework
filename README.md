@@ -54,6 +54,8 @@ iiot-identity-framework/
 │   ├── verification.py         # Permanent identity verification
 │   └── revocation.py           # Device and token revocation
 ├── tests/                      # Automated tests
+├── performance/                # Integrated benchmark and generated results
+├── docs/                       # Contracts, security evaluation and contributions
 ├── data/                       # Generated SQLite database and demo output
 ├── requirements.txt
 └── README.md
@@ -151,7 +153,27 @@ python -m devices.simulator
 python -m pytest -q
 ```
 
-The integrated baseline currently contains 36 passing tests. Run the tests after every integration or security change.
+The final integrated submission contains **41 passing tests**, including four
+consolidated attack demonstrations. Run the tests after every change.
+
+Run only the assignment-level security attacks with:
+
+```powershell
+python -m pytest tests/test_security_attacks.py -q
+```
+
+## Performance Evaluation
+
+Generate fresh measurements, CSV summaries and four graphs from the final
+implementation:
+
+```powershell
+python -m performance.benchmark_full_system
+```
+
+Results are written to `performance/results/` and automatically displayed in
+the dashboard's **Benchmarks** tab. The benchmark repeats device counts 5, 10,
+25, 50, 100 and 200 five times using an isolated in-memory database.
 
 ## Identity and Access Workflow
 
@@ -184,6 +206,10 @@ Access allowed or denied
 | Tampered Merkle proof | Reconstructed root does not match the trusted epoch root |
 | Epoch mismatch | Proof and claimed trusted epoch do not match |
 
+See `docs/SECURITY_EVALUATION.md` for the attacker model, detecting component
+and expected denial code. See `docs/CONTRIBUTIONS.md` for the three-member work
+division and integration decisions.
+
 An old Merkle proof may remain historically valid after device revocation, but it must not authorize current access. The authorization path therefore checks both cryptographic membership and current revocation state.
 
 ## Resetting Local Demonstration Data
@@ -201,4 +227,3 @@ Restart the API afterward. The database tables are recreated by the application.
 - This is an educational single-zone prototype.
 - The local trusted-root registry simulates an immutable root anchor.
 - Production deployment would require HTTPS, secure secret storage, protected administrative revocation endpoints, key rotation, rate limiting, and a distributed or blockchain-backed root registry.
-

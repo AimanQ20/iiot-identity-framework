@@ -1,7 +1,20 @@
-# Attack ownership
+# Security Attack Demonstrations
 
-- Member 1: stolen valid token; expired token.
-- Member 2: exact replay; tampered DID/public key/proof.
+The authoritative automated demonstrations are in
+`tests/test_security_attacks.py` and cover:
 
-Each demonstration must log the manipulated field, detecting component, failed check, and final DENY reason.
+1. Exact signed-request replay
+2. Tampered Merkle inclusion proof
+3. Stolen valid token used without the device private key
+4. Revoked-token reuse
 
+Run them with:
+
+```powershell
+python -m pytest tests/test_security_attacks.py -q
+```
+
+The broader test suite also covers expired tokens, forged signatures, stale
+timestamps, policy violations, epoch mismatch, public-key substitution and old
+proof use after device revocation. Full explanations are provided in
+`docs/SECURITY_EVALUATION.md`.
